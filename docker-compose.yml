@@ -1,0 +1,115 @@
+services:
+  watchtower:
+    image: containrrr/watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - TZ=${TZ}
+      - WATCHTOWER_SCHEDULE=0 *  *# Checks every hour
+      - WATCHTOWER_NOTIFICATIONS=shoutrrr
+      - WATCHTOWER_NOTIFICATION_URL=${DISCORD_URL}
+      - WATCHTOWER_NOTIFICATION_TEMPLATE=
+        {{range .}}{{.Time.Format "02-01-2006 15:04:05"}} ({{.Level}})':' {{.Message}}{{println}}{{end}}
+    command: --cleanup --schedule "0 0 8 * * *"
+    userns_mode: "host"
+    restart: always
+
+  traefik:
+    image: traefik:latest
+    container_name: traefik
+    command:
+      - "--log.level=DEBUG"
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedByDefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
+      - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${LETSENCRYPT_PATH}:/letsencrypt
+    restart: unless-stopped
+
+  waf:
+    image: owasp/modsecurity-crs:apache
+    container_name: waf
+    #NOTE: not perfect but need to get out of permission hell
+    #FIXME: this would need to be fixed
+    user: root
+    environment:
+      PARANOIA: ${WAF_PARANOIA:-1}
+      ANOMALY_INBOUND: ${WAF_ANOMALY_INBOUND:-10}
+      ANOMALY_OUTBOUND: ${WAF_ANOMALY_OUTBOUND:-5}
+      PROXY: 1
+      REMOTEIP_INT_PROXY: ${WAF_REMOTEIP_INT_PROXY:-"172.30.0.0/16"}
+      BACKEND: "http://vaultwarden:80"
+      BACKEND_WS: "ws://vaultwarden:3012"
+      # MODSEC_AUDIT_ENGINE: "on"
+      # MODSEC_AUDIT_LOG: "/var/log/modsec_audit.log"
+      ERRORLOG: "/var/log/modsec_error.log"
+      LOGLEVEL: "warn"
+      PROXY_ERROR_OVERRIDE: "off"
+      SERVER_NAME: ${DOMAIN}
+      PORT: 8080
+      SSL_PORT: 8443
+    volumes:
+      # - ${WAF_LOG_PATH}/modsec_error.log:/var/log/modsec_error.log
+      # NOTE: fail2ban refuse to read my homedir
+      # volumes:
+      - /var/log/waf/modsec_error.log:/var/log/modsec_error.log
+      # - /var/log/waf/modsec_error.log:/var/log/modsec_error.log
+      - ${WAF_RULES_PATH}/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
+      - ${WAF_RULES_PATH}/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.waf.rule=Host(`${DOMAIN}`)
+      - traefik.http.routers.waf.entrypoints=websecure
+      - traefik.http.routers.waf.tls=true
+      - traefik.http.routers.waf.tls.certresolver=myresolver
+      - traefik.http.services.waf.loadbalancer.server.port=8080
+      - traefik.http.middlewares.redirect-https.redirectscheme.scheme=https
+      - traefik.http.middlewares.redirect-https.redirectscheme.permanent=true
+      - traefik.http.routers.waf-http.rule=Host(`${DOMAIN}`)
+      - traefik.http.routers.waf-http.entrypoints=web
+      - traefik.http.routers.waf-http.middlewares=redirect-https
+  vaultwarden:
+    image: vaultwarden/server:latest
+    container_name: vaultwarden
+    restart: unless-stopped
+    environment:
+      WEBSOCKET_ENABLED: "true"
+      SENDS_ALLOWED: "true"
+      PASSWORD_ITERATIONS: ${VW_PASSWORD_ITERATIONS:-500000}
+      SIGNUPS_ALLOWED: ${VW_SIGNUPS_ALLOWED:-"true"}
+      SIGNUPS_VERIFY: ${VW_SIGNUPS_VERIFY:-"true"}
+      SIGNUPS_DOMAINS_WHITELIST: ${VW_SIGNUPS_DOMAINS_WHITELIST}
+      ADMIN_TOKEN: ${VW_ADMIN_TOKEN}
+      DOMAIN: "https://${DOMAIN}"
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_FROM: ${SMTP_FROM}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME}
+      SMTP_SECURITY: ${SMTP_SECURITY:-"starttls"}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      SMTP_TIMEOUT: ${SMTP_TIMEOUT:-15}
+      LOG_FILE: "/data/vaultwarden.log"
+      LOG_LEVEL: ${VW_LOG_LEVEL:-"warn"}
+      EXTENDED_LOGGING: ${VW_EXTENDED_LOGGING:-"true"}
+      TZ: ${TZ}
+      WEB_VAULT_ENABLED: "true"
+      WEB_VAULT_FOLDER: "/web-vault"
+    volumes:
+      - ${VAULTWARDEN_DATA_PATH}:/data
+
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16 # Changed from 172.20.0.0/16

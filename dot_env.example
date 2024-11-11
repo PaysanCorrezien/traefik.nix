@@ -1,0 +1,44 @@
+# Traefik Configuration
+# NOTE: i replaced most of these path with /home/myuser/docker/services
+ACME_EMAIL=you@domain.tld
+LETSENCRYPT_PATH=/opt/docker/letsencrypt
+
+# WAF Configuration
+WAF_PARANOIA=1
+WAF_ANOMALY_INBOUND=10
+WAF_ANOMALY_OUTBOUND=5
+WAF_REMOTEIP_INT_PROXY=172.30.0.0/16
+WAF_LOG_PATH=/opt/docker/waf
+WAF_RULES_PATH=/opt/docker/waf-rules
+
+# Domain Configuration
+DOMAIN=sub.domain.tld
+
+# Vaultwarden Configuration
+VW_PASSWORD_ITERATIONS=500000
+VW_SIGNUPS_ALLOWED=true
+VW_SIGNUPS_VERIFY=true # this will send an email to the user to verify their email , the mail part is mandatory
+# VW_SIGNUPS_DOMAINS_WHITELIST=yourdomain.tld 
+VW_ADMIN_TOKEN=your_admin_token_here  # Generate with openssl rand -base64 48
+VW_LOG_LEVEL=warn
+VW_EXTENDED_LOGGING=true
+VAULTWARDEN_DATA_PATH=/opt/docker/vaultwarden
+
+# SMTP Configuration
+SMTP_HOST=smtp.yourdomain.tld
+SMTP_FROM=you@domain.tld
+SMTP_FROM_NAME=Your Name
+SMTP_SECURITY=starttls
+SMTP_PORT=587
+SMTP_USERNAME=your_smtp_username
+SMTP_PASSWORD=your_smtp_password
+SMTP_TIMEOUT=15
+
+# Time Zone 
+TZ=Your/Timezone # Example: Europe/Paris
+
+# Docker Network Configuration
+DOCKER_SUBNET=172.20.0.0/16
+
+# discord webook url for watchtower 
+DISCORD_URL=discord://webhooh_url_here
