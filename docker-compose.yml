@@ -38,8 +38,6 @@ services:
   waf:
     image: owasp/modsecurity-crs:apache
     container_name: waf
-    #NOTE: not perfect but need to get out of permission hell
-    #FIXME: this would need to be fixed
     user: root
     environment:
       PARANOIA: ${WAF_PARANOIA:-1}
@@ -47,10 +45,8 @@ services:
       ANOMALY_OUTBOUND: ${WAF_ANOMALY_OUTBOUND:-5}
       PROXY: 1
       REMOTEIP_INT_PROXY: ${WAF_REMOTEIP_INT_PROXY:-"172.30.0.0/16"}
-      BACKEND: "http://vaultwarden:80"
-      BACKEND_WS: "ws://vaultwarden:3012"
-      # MODSEC_AUDIT_ENGINE: "on"
-      # MODSEC_AUDIT_LOG: "/var/log/modsec_audit.log"
+      BACKEND: "http://homepage:3000"
+      BACKEND_WS: "ws://homepage:3000"
       ERRORLOG: "/var/log/modsec_error.log"
       LOGLEVEL: "warn"
       PROXY_ERROR_OVERRIDE: "off"
@@ -58,11 +54,7 @@ services:
       PORT: 8080
       SSL_PORT: 8443
     volumes:
-      # - ${WAF_LOG_PATH}/modsec_error.log:/var/log/modsec_error.log
-      # NOTE: fail2ban refuse to read my homedir
-      # volumes:
       - /var/log/waf/modsec_error.log:/var/log/modsec_error.log
-      # - /var/log/waf/modsec_error.log:/var/log/modsec_error.log
       - ${WAF_RULES_PATH}/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
       - ${WAF_RULES_PATH}/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf
     labels:
@@ -77,39 +69,66 @@ services:
       - traefik.http.routers.waf-http.rule=Host(`${DOMAIN}`)
       - traefik.http.routers.waf-http.entrypoints=web
       - traefik.http.routers.waf-http.middlewares=redirect-https
-  vaultwarden:
-    image: vaultwarden/server:latest
-    container_name: vaultwarden
-    restart: unless-stopped
+
+  openldap:
+    image: osixia/openldap:latest
+    container_name: openldap
     environment:
-      WEBSOCKET_ENABLED: "true"
-      SENDS_ALLOWED: "true"
-      PASSWORD_ITERATIONS: ${VW_PASSWORD_ITERATIONS:-500000}
-      SIGNUPS_ALLOWED: ${VW_SIGNUPS_ALLOWED:-"true"}
-      SIGNUPS_VERIFY: ${VW_SIGNUPS_VERIFY:-"true"}
-      SIGNUPS_DOMAINS_WHITELIST: ${VW_SIGNUPS_DOMAINS_WHITELIST}
-      ADMIN_TOKEN: ${VW_ADMIN_TOKEN}
-      DOMAIN: "https://${DOMAIN}"
-      SMTP_HOST: ${SMTP_HOST}
-      SMTP_FROM: ${SMTP_FROM}
-      SMTP_FROM_NAME: ${SMTP_FROM_NAME}
-      SMTP_SECURITY: ${SMTP_SECURITY:-"starttls"}
-      SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_USERNAME: ${SMTP_USERNAME}
-      SMTP_PASSWORD: ${SMTP_PASSWORD}
-      SMTP_TIMEOUT: ${SMTP_TIMEOUT:-15}
-      LOG_FILE: "/data/vaultwarden.log"
-      LOG_LEVEL: ${VW_LOG_LEVEL:-"warn"}
-      EXTENDED_LOGGING: ${VW_EXTENDED_LOGGING:-"true"}
-      TZ: ${TZ}
-      WEB_VAULT_ENABLED: "true"
-      WEB_VAULT_FOLDER: "/web-vault"
+      LDAP_ORGANISATION: ${LDAP_ORGANISATION}
+      LDAP_DOMAIN: ${LDAP_DOMAIN}
+      LDAP_ADMIN_PASSWORD: ${LDAP_ADMIN_PASSWORD}
+      LDAP_TLS: "false"
     volumes:
-      - ${VAULTWARDEN_DATA_PATH}:/data
+      - ${OPENLDAP_DATA_PATH}/data:/var/lib/ldap
+      - ${OPENLDAP_DATA_PATH}/config:/etc/ldap/slapd.d
+    restart: unless-stopped
+
+  ldap-admin:
+    image: osixia/phpldapadmin:latest
+    container_name: ldap-admin
+    environment:
+      PHPLDAPADMIN_LDAP_HOSTS: openldap
+      PHPLDAPADMIN_HTTPS: "false"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.ldapadmin.rule=Host(`ldap.${DOMAIN}`)
+      - traefik.http.routers.ldapadmin.entrypoints=websecure
+      - traefik.http.routers.ldapadmin.tls=true
+      - traefik.http.routers.ldapadmin.tls.certresolver=myresolver
+    restart: unless-stopped
+
+  authelia:
+    image: authelia/authelia:latest
+    container_name: authelia
+    volumes:
+      - ${AUTHELIA_CONFIG_PATH}:/config
+    environment:
+      - TZ=${TZ}
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.authelia.rule=Host(`auth.${DOMAIN}`)
+      - traefik.http.routers.authelia.entrypoints=websecure
+      - traefik.http.routers.authelia.tls=true
+      - traefik.http.routers.authelia.tls.certresolver=myresolver
+    restart: unless-stopped
+
+  homepage:
+    image: ghcr.io/benphelps/homepage:latest
+    container_name: homepage
+    volumes:
+      - ${HOMEPAGE_CONFIG_PATH}:/app/config
+      - /var/run/docker.sock:/var/run/docker.sock
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.homepage.rule=Host(`${DOMAIN}`)
+      - traefik.http.routers.homepage.entrypoints=websecure
+      - traefik.http.routers.homepage.tls=true
+      - traefik.http.routers.homepage.tls.certresolver=myresolver
+    restart: unless-stopped
 
 networks:
   default:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.30.0.0/16 # Changed from 172.20.0.0/16
+        - subnet: 172.30.0.0/16
