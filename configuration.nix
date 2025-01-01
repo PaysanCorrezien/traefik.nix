@@ -12,7 +12,7 @@ let
   USER_SSH_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINpKQ0EH2eg++vdrgbugCjeUE02qc64V6U0CxCOAdnvX dylan@cloud-auth";
 
   # System variables
-  MACHINE_HOSTNAME = "homeserver";
+  MACHINE_HOSTNAME = "auth";
   SYSTEM_STATE_VERSION = "24.05";
 
   # Application variables
@@ -35,6 +35,7 @@ in
     (modulesPath + "/installer/scan/not-detected.nix")
     (modulesPath + "/profiles/qemu-guest.nix")
     ./disk-config.nix
+    (fetchTarball "https://github.com/nix-community/nixos-vscode-server/tarball/master")
   ];
 
   nix.settings.experimental-features = [
@@ -51,6 +52,7 @@ in
     efiSupport = true;
     efiInstallAsRemovable = true;
   };
+
   #NOTE: there is a direct option for this i think
   security.sudo.extraRules = [
     {
@@ -79,13 +81,14 @@ in
     extraConfig = ''
       AllowUsers ${USER_NAME}
       PubkeyAuthentication yes
-      AllowTcpForwarding no
+      #for vs code
+      AllowTcpForwarding yes
       AllowAgentForwarding no
       MaxAuthTries 10
       ClientAliveCountMax 2
       MaxSessions 2
       # Port 2222  # Choose a different non-standard port
-      TCPKeepAlive no
+      TCPKeepAlive yes
     '';
   };
 
@@ -107,7 +110,7 @@ in
     shellAliases = {
       n = "nvim";
       y = "yazi";
-      ld = "lazydocker";
+      dk = "lazydocker";
       dc = "docker compose";
       dcu = "docker compose up -d";
       dcd = "docker compose down";
@@ -133,6 +136,7 @@ in
   system.stateVersion = SYSTEM_STATE_VERSION;
 
   services.tailscale = {
+    useRoutingFeatures = "both"; # Enables routing features
     enable = true;
     openFirewall = true;
     interfaceName = "tailscale0";
@@ -153,42 +157,26 @@ in
     };
   };
 
-  system.activationScripts = {
-    setupDirectories = {
-      text = ''
-        # Create waf directories
-        mkdir -p ${USER_HOME}/waf/log ${USER_HOME}/waf/rules
-        chown -R ${USER_NAME}:${USER_NAME} ${USER_HOME}/waf
-        touch /var/log/modsec_error.log
+  #TODO: fix tis is cant be dylan:dylan for chown
+  # Add this section to your configuration
+  systemd.tmpfiles.rules = [
+    # Main docker directory
+    "d ${DOCKER_PATH} 0775 ${USER_NAME} users -"
 
-        # Create docker directory
-        mkdir -p ${DOCKER_PATH}
-        chown ${USER_NAME}:${USER_NAME} ${DOCKER_PATH}
-        chmod 775 ${DOCKER_PATH}
+    # WAF directories
+    "d ${USER_HOME}/waf 0775 ${USER_NAME} users -"
+    "d ${USER_HOME}/waf/log 0775 ${USER_NAME} users -"
+    "d ${USER_HOME}/waf/rules 0775 ${USER_NAME} users -"
+    "f /var/log/modsec_error.log 0664 ${USER_NAME} users -"
 
-        # Create letsencrypt directory
-        mkdir -p ${LETSENCRYPT_PATH}
-        chown ${USER_NAME}:${USER_NAME} ${LETSENCRYPT_PATH}
-        chmod 775 ${LETSENCRYPT_PATH}
-
-        # Create OpenLDAP directory
-        mkdir -p ${OPENLDAP_PATH}/data ${OPENLDAP_PATH}/config
-        chown ${USER_NAME}:${USER_NAME} ${OPENLDAP_PATH}
-        chmod 775 ${OPENLDAP_PATH}
-
-        # Create Authelia directory
-        mkdir -p ${AUTHELIA_PATH}
-        chown ${USER_NAME}:${USER_NAME} ${AUTHELIA_PATH}
-        chmod 775 ${AUTHELIA_PATH}
-
-        # Create Homepage directory
-        mkdir -p ${HOMEPAGE_PATH}
-        chown ${USER_NAME}:${USER_NAME} ${HOMEPAGE_PATH}
-        chmod 775 ${HOMEPAGE_PATH}
-      '';
-      deps = [ ];
-    };
-  };
+    # Service directories
+    "d ${LETSENCRYPT_PATH} 0775 ${USER_NAME} users -"
+    "d ${OPENLDAP_PATH} 0775 ${USER_NAME} users -"
+    "d ${OPENLDAP_PATH}/data 0775 ${USER_NAME} users -"
+    "d ${OPENLDAP_PATH}/config 0775 ${USER_NAME} users -"
+    "d ${AUTHELIA_PATH} 0775 ${USER_NAME} users -"
+    "d ${HOMEPAGE_PATH} 0775 ${USER_NAME} users -"
+  ];
 
   services.fail2ban = {
     enable = true;
@@ -217,4 +205,23 @@ in
     failregex = ^\[.*\] \[.*\] \[client <HOST>\] ModSecurity: Access denied.*$
     ignoreregex =
   '';
+
+  boot.kernel.sysctl = {
+    "net.ipv4.ip_forward" = 1;
+    "net.ipv6.conf.all.forwarding" = 1;
+  };
+
+  systemd.services.ethtool-config = {
+    description = "Configure network interface optimizations";
+    after = [ "network.target" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = "yes";
+      ExecStart = "${pkgs.ethtool}/bin/ethtool -K ens6 rx-udp-gro-forwarding on";
+    };
+  };
+  services.vscode-server.enable = true;
+
 }
+

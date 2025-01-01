@@ -17,58 +17,158 @@ services:
   traefik:
     image: traefik:latest
     container_name: traefik
-    command:
-      - "--log.level=DEBUG"
-      - "--api.insecure=true"
-      - "--providers.docker=true"
-      - "--providers.docker.exposedByDefault=false"
-      - "--entrypoints.web.address=:80"
-      - "--entrypoints.websecure.address=:443"
-      - "--certificatesresolvers.myresolver.acme.tlschallenge=true"
-      - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}"
-      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+    networks:
+      - default
+    security_opt:
+      - no-new-privileges:true
     ports:
-      - 80:80
-      - 443:443
+      - "80:80"
+      - "443:443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ${LETSENCRYPT_PATH}:/letsencrypt
+      - ${HOME}/docker/traefik/config:/etc/traefik
+      - ${HOME}/docker/traefik/data/:/data
+
+    command:
+      # Global settings
+      - "--global.sendAnonymousUsage=false"
+      # API and Dashboard
+      - "--api=true"
+      - "--api.dashboard=true"
+      - "--api.insecure=false" # Changed to false for security
+      # Docker provider
+      - "--providers.docker=true"
+      - "--providers.docker.exposedByDefault=false"
+      - "--providers.docker.network=default"
+      # Entrypoints
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # HTTPS redirect
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+      - "--entrypoints.web.http.redirections.entrypoint.permanent=true"
+      # TLS configuration
+      - "--entrypoints.websecure.http.tls=true"
+      - "--entrypoints.websecure.http.tls.certResolver=myresolver"
+      - "--entrypoints.websecure.http.tls.domains[0].main=${DOMAIN}"
+      - "--entrypoints.websecure.http.tls.domains[0].sans=*.${DOMAIN}"
+      # ACME (Let's Encrypt) configuration
+      - "--certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.myresolver.acme.httpchallenge=true"
+      - "--certificatesresolvers.myresolver.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.myresolver.acme.keytype=EC384"
+      # Logs
+      # - "--log.level=DEBUG"
+      - "--accesslog=true"
+      - "--providers.file.directory=/etc/traefik"
+      - "--providers.file.watch=true"
+      - "--providers.file.filename=config.yml"
+    labels:
+      - "traefik.enable=true"
+      # Dashboard
+      - "traefik.http.routers.traefik.rule=Host(`traefik.${DOMAIN}`)"
+      - "traefik.http.routers.traefik.service=api@internal"
+      - "traefik.http.routers.traefik.entrypoints=websecure"
+      - "traefik.http.routers.traefik.tls=true"
+      - "traefik.http.routers.traefik.tls.certresolver=myresolver"
+      - "traefik.http.routers.traefik.middlewares=authelia-auth@docker"
+
+      # Global HTTPS redirect
+      - "traefik.http.routers.http-catchall.rule=hostregexp(`{host:.+}`)"
+      - "traefik.http.routers.http-catchall.entrypoints=web"
+      - "traefik.http.routers.http-catchall.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
     restart: unless-stopped
 
-  waf:
-    image: owasp/modsecurity-crs:apache
-    container_name: waf
-    user: root
-    environment:
-      PARANOIA: ${WAF_PARANOIA:-1}
-      ANOMALY_INBOUND: ${WAF_ANOMALY_INBOUND:-10}
-      ANOMALY_OUTBOUND: ${WAF_ANOMALY_OUTBOUND:-5}
-      PROXY: 1
-      REMOTEIP_INT_PROXY: ${WAF_REMOTEIP_INT_PROXY:-"172.30.0.0/16"}
-      BACKEND: "http://homepage:3000"
-      BACKEND_WS: "ws://homepage:3000"
-      ERRORLOG: "/var/log/modsec_error.log"
-      LOGLEVEL: "warn"
-      PROXY_ERROR_OVERRIDE: "off"
-      SERVER_NAME: ${DOMAIN}
-      PORT: 8080
-      SSL_PORT: 8443
+  authelia:
+    image: authelia/authelia:latest
+    container_name: authelia
     volumes:
-      - /var/log/waf/modsec_error.log:/var/log/modsec_error.log
-      - ${WAF_RULES_PATH}/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
-      - ${WAF_RULES_PATH}/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf
+      - ${AUTHELIA_CONFIG_PATH}:/config
+    environment:
+      - TZ=${TZ}
     labels:
-      - traefik.enable=true
-      - traefik.http.routers.waf.rule=Host(`${DOMAIN}`)
-      - traefik.http.routers.waf.entrypoints=websecure
-      - traefik.http.routers.waf.tls=true
-      - traefik.http.routers.waf.tls.certresolver=myresolver
-      - traefik.http.services.waf.loadbalancer.server.port=8080
-      - traefik.http.middlewares.redirect-https.redirectscheme.scheme=https
-      - traefik.http.middlewares.redirect-https.redirectscheme.permanent=true
-      - traefik.http.routers.waf-http.rule=Host(`${DOMAIN}`)
-      - traefik.http.routers.waf-http.entrypoints=web
-      - traefik.http.routers.waf-http.middlewares=redirect-https
+      - "traefik.enable=true"
+      - "traefik.http.routers.authelia.rule=Host(`auth.${DOMAIN}`)"
+      - "traefik.http.routers.authelia.entrypoints=websecure"
+      - "traefik.http.routers.authelia.tls=true"
+      - "traefik.http.routers.authelia.tls.certresolver=myresolver"
+      - "traefik.http.services.authelia.loadbalancer.server.port=9091"
+      - "traefik.http.middlewares.authelia-auth.forwardauth.address=http://authelia:9091/api/verify?rd=https://auth.${DOMAIN}"
+      - "traefik.http.middlewares.authelia-auth.forwardauth.trustForwardHeader=true"
+      - "traefik.http.middlewares.authelia-auth.forwardauth.authResponseHeaders=Remote-User,Remote-Groups,Remote-Name,Remote-Email"
+    restart: unless-stopped
+
+  pds:
+    container_name: pds
+    image: ghcr.io/bluesky-social/pds:0.4
+    restart: unless-stopped
+    volumes:
+      - ${BSKY_PDS_CONFIG_PATH}:/pds
+    environment:
+      - PDS_HOSTNAME=${PDS_HOSTNAME}
+      - PDS_JWT_SECRET=${PDS_JWT_SECRET}
+      - PDS_ADMIN_PASSWORD=${PDS_ADMIN_PASSWORD}
+      - PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX=${PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX}
+      - PDS_DATA_DIRECTORY=/pds
+      - PDS_BLOBSTORE_DISK_LOCATION=/pds/blocks
+      - PDS_BLOB_UPLOAD_LIMIT=52428800
+      - PDS_DID_PLC_URL=https://plc.directory
+      - PDS_BSKY_APP_VIEW_URL=https://api.bsky.app
+      - PDS_BSKY_APP_VIEW_DID=did:web:api.bsky.app
+      - PDS_REPORT_SERVICE_URL=https://mod.bsky.app
+      - PDS_REPORT_SERVICE_DID=did:plc:ar7c4by46qjdydhdevvrndac
+      - PDS_CRAWLERS=https://bsky.network
+      - LOG_ENABLED=true
+    expose:
+      - "3000"
+    labels:
+      - "traefik.enable=true"
+      # Router for main domain and subdomains
+      - "traefik.http.routers.pds.rule=HostRegexp(`{subdomain:[a-zA-Z0-9-]+}.bsky.${DOMAIN}`) || Host(`bsky.${DOMAIN}`)"
+      - "traefik.http.routers.pds.entrypoints=websecure"
+      - "traefik.http.routers.pds.tls=true"
+      - "traefik.http.routers.pds.tls.certresolver=myresolver"
+      # Service configuration
+      - "traefik.http.services.pds.loadbalancer.server.port=3000"
+      - "traefik.http.services.pds.loadbalancer.passHostHeader=true"
+
+  # waf:
+  #   image: owasp/modsecurity-crs:apache
+  #   container_name: waf
+  #   user: root
+  #   environment:
+  #     PARANOIA: ${WAF_PARANOIA:-1}
+  #     ANOMALY_INBOUND: ${WAF_ANOMALY_INBOUND:-10}
+  #     ANOMALY_OUTBOUND: ${WAF_ANOMALY_OUTBOUND:-5}
+  #     PROXY: 1
+  #     REMOTEIP_INT_PROXY: ${WAF_REMOTEIP_INT_PROXY:-"172.30.0.0/16"}
+  #     BACKEND: "http://homepage:3000"
+  #     BACKEND_WS: "ws://homepage:3000"
+  #     ERRORLOG: "/var/log/modsec_error.log"
+  #     LOGLEVEL: "warn"
+  #     PROXY_ERROR_OVERRIDE: "off"
+  #     SERVER_NAME: ${DOMAIN}
+  #     PORT: 8080
+  #     SSL_PORT: 8443
+  #   volumes:
+  #     - /var/log/waf/modsec_error.log:/var/log/modsec_error.log
+  #     - ${WAF_RULES_PATH}/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf
+  #     - ${WAF_RULES_PATH}/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf:/etc/modsecurity.d/owasp-crs/rules/RESPONSE-999-EXCLUSION-RULES-AFTER-CRS.conf
+  #   labels:
+  #     - "traefik.enable=true"
+  #     - "traefik.http.routers.waf.rule=Host(`${DOMAIN}`)"
+  #     - "traefik.http.routers.waf.entrypoints=websecure"
+  #     - "traefik.http.routers.waf.tls=true"
+  #     - "traefik.http.routers.waf.tls.certresolver=myresolver"
+  #     - "traefik.http.services.waf.loadbalancer.server.port=8080"
+  #     - "traefik.http.middlewares.redirect-https.redirectscheme.scheme=https"
+  #     - "traefik.http.middlewares.redirect-https.redirectscheme.permanent=true"
+  #     - "traefik.http.routers.waf-http.rule=Host(`${DOMAIN}`)"
+  #     - "traefik.http.routers.waf-http.entrypoints=web"
+  #     - "traefik.http.routers.waf-http.middlewares=redirect-https"
 
   openldap:
     image: osixia/openldap:latest
@@ -90,46 +190,38 @@ services:
       PHPLDAPADMIN_LDAP_HOSTS: openldap
       PHPLDAPADMIN_HTTPS: "false"
     labels:
-      - traefik.enable=true
-      - traefik.http.routers.ldapadmin.rule=Host(`ldap.${DOMAIN}`)
-      - traefik.http.routers.ldapadmin.entrypoints=websecure
-      - traefik.http.routers.ldapadmin.tls=true
-      - traefik.http.routers.ldapadmin.tls.certresolver=myresolver
-    restart: unless-stopped
-
-  authelia:
-    image: authelia/authelia:latest
-    container_name: authelia
-    volumes:
-      - ${AUTHELIA_CONFIG_PATH}:/config
-    environment:
-      - TZ=${TZ}
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.authelia.rule=Host(`auth.${DOMAIN}`)
-      - traefik.http.routers.authelia.entrypoints=websecure
-      - traefik.http.routers.authelia.tls=true
-      - traefik.http.routers.authelia.tls.certresolver=myresolver
-      - traefik.http.routers.authelia.service=authelia
-      - traefik.http.services.authelia.loadbalancer.server.port=9091
-      - traefik.http.middlewares.authelia.forwardauth.address=http://authelia:9091/api/authz/forward-auth
-      - traefik.http.middlewares.authelia.forwardauth.trustForwardHeader=true
-      - traefik.http.middlewares.authelia.forwardauth.authResponseHeaders=Remote-User,Remote-Groups,Remote-Email,Remote-Name
+      - "traefik.enable=true"
+      - "traefik.http.routers.ldapadmin.rule=Host(`annuaire.${DOMAIN}`)"
+      - "traefik.http.routers.ldapadmin.entrypoints=websecure"
+      - "traefik.http.routers.ldapadmin.tls=true"
+      - "traefik.http.routers.ldapadmin.tls.certresolver=myresolver"
+      - "traefik.http.routers.ldapadmin.middlewares=authelia-auth@docker"
+      - "traefik.http.services.ldapadmin.loadbalancer.server.port=80"
     restart: unless-stopped
 
   homepage:
-    image: ghcr.io/benphelps/homepage:latest
+    image: ghcr.io/gethomepage/homepage:latest
     container_name: homepage
     volumes:
       - ${HOMEPAGE_CONFIG_PATH}:/app/config
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOMEPAGE_CONFIG_PATH}/images:/app/public/images
+      - ${HOMEPAGE_CONFIG_PATH}/icons:/app/public/icons
+    environment:
+      - TZ=${TZ}
+    expose:
+      - "3000"
     labels:
-      - traefik.enable=true
-      - traefik.http.routers.homepage.rule=Host(`${DOMAIN}`)
-      - traefik.http.routers.homepage.entrypoints=websecure
-      - traefik.http.routers.homepage.tls=true
-      - traefik.http.routers.homepage.tls.certresolver=myresolver
-      - traefik.http.routers.homepage.middlewares=authelia@docker
+      - "traefik.enable=true"
+      # Router configuration - using the subdomain
+      - "traefik.http.routers.homepage.rule=Host(`homepage.${DOMAIN}`)"
+      - "traefik.http.routers.homepage.entrypoints=websecure"
+      - "traefik.http.routers.homepage.tls=true"
+      - "traefik.http.routers.homepage.tls.certresolver=myresolver"
+      - "traefik.http.routers.homepage.middlewares=authelia-auth@docker"
+      # Service configuration
+      - "traefik.http.services.homepage.loadbalancer.server.port=3000"
+      - "traefik.http.services.homepage.loadbalancer.passHostHeader=true"
     restart: unless-stopped
 
 networks:
